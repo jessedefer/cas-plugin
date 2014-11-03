@@ -1,10 +1,19 @@
 package org.jenkinsci.plugins.cas.spring;
 
 import hudson.tasks.Mailer;
+import jenkins.model.Jenkins;
 
 import java.io.IOException;
+import java.io.FileNotFoundException;
 import java.util.Map;
 import java.util.Collection;
+import java.util.ArrayList;
+import java.util.Properties;
+import java.io.File;
+import java.io.FileInputStream;
+import java.util.Arrays;
+import java.util.logging.Logger;
+import java.util.logging.Level;
 
 import org.acegisecurity.GrantedAuthority;
 import org.acegisecurity.GrantedAuthorityImpl;
@@ -24,6 +33,7 @@ import org.springframework.security.core.Authentication;
  * @author Fabien Crespel <fabien@crespel.net>
  */
 public class CasEventListener implements ApplicationListener {
+  	private static final Logger LOGGER = Logger.getLogger(CasEventListener.class.getName());
 
 	public static final String DEFAULT_FULL_NAME_ATTRIBUTE = "cn";
 	public static final String DEFAULT_EMAIL_ATTRIBUTE = "mail";
@@ -63,18 +73,48 @@ public class CasEventListener implements ApplicationListener {
 	 */
 	protected void copyToAcegiContext(CasAuthenticationToken casToken) {
 		// Map granted authorities
-		GrantedAuthority[] authorities = new GrantedAuthority[casToken.getAuthorities().size()];
+		ArrayList<GrantedAuthority> authorities = new ArrayList<GrantedAuthority>();
+
 		int i = 0;
 		for (org.springframework.security.core.GrantedAuthority authority : casToken.getAuthorities()) {
-			authorities[i++] = new GrantedAuthorityImpl(authority.getAuthority());
+			authorities.add(new GrantedAuthorityImpl(authority.getAuthority()));
 		}
-
+		
 		// Map user
 		org.springframework.security.core.userdetails.User sourceUser = (org.springframework.security.core.userdetails.User) casToken.getUserDetails();
-		User user = new User(sourceUser.getUsername(), sourceUser.getPassword(), sourceUser.isEnabled(), sourceUser.isAccountNonExpired(), sourceUser.isCredentialsNonExpired(), sourceUser.isAccountNonLocked(), authorities);
+
+		// ASU::
+		LOGGER.log(Level.INFO, "CAS login: {0}", sourceUser.getUsername());
+		FileInputStream in = null;
+		try {
+			Properties groupProps = new Properties();
+			in = new FileInputStream(new File(Jenkins.getInstance().getRootDir().getPath(), "casgroups.properties"));
+			groupProps.load(in);
+			if (groupProps.containsKey(sourceUser.getUsername())) {
+			  	String groups = groupProps.getProperty(sourceUser.getUsername());
+				String[] args = new String[] { sourceUser.getUsername(), groups };
+				LOGGER.log(Level.INFO, "CAS groups for {0} are {1}", args);
+				for (String group : groups.split(",")) {
+					authorities.add(new GrantedAuthorityImpl(group));
+				}
+			}
+		} catch (FileNotFoundException e) {
+			LOGGER.log(Level.WARNING, "CAS group properties not found");
+		} catch (IOException e) {
+			LOGGER.log(Level.SEVERE, "CAS group properties Exception");
+		} finally {
+	 		if (in != null) {
+				try {
+	  				in.close();
+				} catch (IOException e) {
+				}
+			}
+		}
+
+		User user = new User(sourceUser.getUsername(), sourceUser.getPassword(), sourceUser.isEnabled(), sourceUser.isAccountNonExpired(), sourceUser.isCredentialsNonExpired(), sourceUser.isAccountNonLocked(), authorities.toArray(new GrantedAuthority[0]));
 
 		// Build a CasAuthentication object
-		CasAuthentication authentication = new CasAuthentication(casToken.getKeyHash(), user, casToken.getCredentials(), authorities, user, casToken.getAssertion());
+		CasAuthentication authentication = new CasAuthentication(casToken.getKeyHash(), user, casToken.getCredentials(), authorities.toArray(new GrantedAuthority[0]), user, casToken.getAssertion());
 
 		// Fill the Acegi security context
 		SecurityContextHolder.getContext().setAuthentication(authentication);
